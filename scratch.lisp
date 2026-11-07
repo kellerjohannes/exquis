@@ -1,5 +1,57 @@
 (in-package :exquis)
 
+(defparameter *keys* (make-array 62 :initial-element '(:interval 0)))
+
+(defun get-freq (key-id)
+  ())
+
+(defconstant +num-moogs+ 5)
+
+(defparameter *moog-status* (make-array +num-moogs+ :initial-element nil))
+
+(defun get-next-free-moog ()
+  (dotimes (i +num-moogs+)
+    (unless (aref *moog-status* i)
+      (return i))))
+
+(defparameter *selected-moog* nil)
+
+
+(vug:dsp! moog (freq amp vcf res)
+  (incudine.util:with-samples ((in (* amp (vug:moogladder (vug:phasor freq 0) vcf res))))
+    (vug:out in in)))
+
+(defun start-moogs ()
+  (dotimes (i +num-moogs+)
+    (moog 440 0.5 100 1 :id (1+ i))))
+
+(defun stop-moogs ()
+  (dotimes (i +num-moogs+)
+    (incudine:free (1+ i))))
+
+(defparameter *global-amp* 0.15)
+
+(defun play-moog (freq)
+  (let ((id (get-next-free-moog)))
+    (incudine:set-control (1+ id) :amp *global-amp*)
+    (incudine:set-control (1+ id) :freq freq)
+    (setf (aref *moog-status* id) t)))
+
+(defun stop-moog (moog-id)
+  (incudine:set-control (1+ moog-id) :amp 0)
+  (setf (aref *moog-status* moog-id) nil))
+
+
+;; (incf (incudine:control-value 1 :amp) 0.1)
+
+;; (incudine:set-control 1 :freq 70)
+;; (incudine:set-control 1 :vcf 280)
+;; (incudine:set-control 1 :res 0.2)
+;; (incudine:set-control 1 :amp 0.9)
+
+
+;; (incudine:free 1)
+
 
 (defparameter *exquis-out* (jackmidi:open :port-name "Exquis out" :direction :output))
 
@@ -7,25 +59,53 @@
 
 (defparameter *time-delta* 4000)
 
+(defparameter *color* (list 100 0 0))
+
+(defparameter *running* t)
+
+(defparameter *tuningp* nil)
+
+(defun start-tuning ()
+  (setf *tuningp* t)
+  (set-color 100 127 0 0))
+
+(defun stop-tuning ()
+  (setf *tuningp* nil)
+  (setf *selected-moog* nil)
+  (set-color 100 10 10 10))
+
 (defun exquis-callbacks (status data1 data2)
   (format t "~&~d:~d:~d~%" status data1 data2)
   (case status
-    (176 (case data1
-           (41 (setf *time-delta* (* (1+ data2) 100)))
-           (21 (pads-off))
-           (42 (setf (first *color*) data2))
-           (43 (setf (second *color*) data2))
-           (44 (setf (third *color*) data2))))
+    (159 (when (< data1 61)
+           (if *tuningp*
+               (progn
+                 (setf *selected-moog* data2)
+                 (play-moog (get-freq data1)))
+               (if (= data2 127)
+                   (play-moog (get-freq data1))
+                   (stop-moog (get-moog-id data1))))))
+    ;; (176 (case data1
+    ;;        (41 (setf *time-delta* (* (1+ data2) 100)))
+    ;;        (21 (pads-off))
+    ;;        (42 (setf (first *color*) data2))
+    ;;        (43 (setf (second *color*) data2))
+    ;;        (44 (setf (third *color*) data2))))
     (191 (case data1
-           (113 (incf (incudine:control-value 1 :amp) (* 0.01 (- data2 64)))
-            (format t "~&amp: ~d" (incudine:control-value 1 :amp)))
-           (112 (incf (incudine:control-value 1 :vcf) (* 2 (- data2 64)))
-            (format t "~&vcf: ~d" (incudine:control-value 1 :vcf)))
-           (111 (incf (incudine:control-value 1 :res) (* 0.01 (- data2 64)))
-            (format t "~&res: ~d" (incudine:control-value 1 :res)))
-           (110 (incf (incudine:control-value 1 :freq) (* 0.1 (- data2 64)))
-            (format t "~&freq: ~d" (incudine:control-value 1 :freq)))
-           ))))
+           ;; (113 (incf (incudine:control-value 1 :amp) (* 0.01 (- data2 64)))
+           ;;  (format t "~&amp: ~d" (incudine:control-value 1 :amp)))
+           ;; (112 (incf (incudine:control-value 1 :vcf) (* 2 (- data2 64)))
+           ;;  (format t "~&vcf: ~d" (incudine:control-value 1 :vcf)))
+           ;; (111 (incf (incudine:control-value 1 :res) (* 0.01 (- data2 64)))
+           ;;  (format t "~&res: ~d" (incudine:control-value 1 :res)))
+           ;; (110 (incf (incudine:control-value 1 :freq) (* 0.1 (- data2 64)))
+           ;;  (format t "~&freq: ~d" (incudine:control-value 1 :freq)))
+           (100 (when (eq data2 127)
+                  (format t "~&Tuning mode.~%")
+                  (if *tuningp*
+                      (stop-tuning)
+                      (start-tuning)
+                      )))))))
 
 (defun init ()
   (incudine:rt-start)
@@ -62,9 +142,6 @@
                                                     #xf7))))
     (jackmidi:write *exquis-out* msg)))
 
-(defparameter *color* (list 100 0 0))
-
-(defparameter *running* t)
 
 (defun swipe (key-id)
   (when *running*
@@ -87,31 +164,3 @@
   (when *running*
     (set-color (random 61) (first *color*) (second *color*) (third *color*))
     (incudine:at (+ (incudine:now) *time-delta*) #'defined-color)))
-
-
-
-
-(defparameter *keys* (make-array 62 :initial-element '(:interval 0)))
-
-
-(vug:dsp! moog (freq amp vcf res)
-  (incudine.util:with-samples ((in (* amp (vug:moogladder (vug:phasor freq 0) vcf res))))
-    (vug:out in in)))
-
-(defun start-moogs ()
-  (dotimes (i 60)
-    (moog 440 0.5 100 1 :id (1+ i))))
-
-(defun stop-moogs ()
-  (dotimes (i 60)
-    (incudine:free (1+ i))))
-
-(incf (incudine:control-value 1 :amp) 0.1)
-
-(incudine:set-control 1 :freq 70)
-(incudine:set-control 1 :vcf 280)
-(incudine:set-control 1 :res 0.2)
-(incudine:set-control 1 :amp 0.9)
-
-
-(incudine:free 1)
